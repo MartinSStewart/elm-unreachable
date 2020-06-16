@@ -1,4 +1,4 @@
-module UnreachableCheck exposing (..)
+module UnreachableCheck exposing (Dependency, DependencyRaw, dependencyPath, elmHome, getDependencyData, handleApplicationElmJson, handleDependencies, handlePackageElmJson, main, parseModule, script)
 
 import Elm.Package
 import Elm.Parser
@@ -12,7 +12,9 @@ import Json.Decode as JD
 import List.Extra as List
 import Script exposing (Script)
 import Script.Directory
+import Script.Environment
 import Script.File
+import Script.Platform
 import Time
 
 
@@ -73,8 +75,8 @@ parseModule init path =
 
 getDependencyData : Script.Init -> Elm.Project.ApplicationInfo -> ( Elm.Package.Name, Elm.Version.Version ) -> Script String DependencyRaw
 getDependencyData init applicationInfo dependency =
-    dependencyPath applicationInfo.elm dependency
-        ++ "/src"
+    dependencyPath init applicationInfo.elm dependency
+        ++ "src/"
         |> Script.Directory.readOnly init.userPrivileges
         |> Script.Directory.listFiles
         |> Script.thenWith (List.map Script.File.read >> Script.sequence)
@@ -114,14 +116,15 @@ handleDependencies init applicationInfo =
 --                Script.fail error
 
 
-dependencyPath : Elm.Version.Version -> ( Elm.Package.Name, Elm.Version.Version ) -> String
-dependencyPath elmVersion ( name, version ) =
-    "/Users/martinstewart/.elm/"
+dependencyPath : Script.Init -> Elm.Version.Version -> ( Elm.Package.Name, Elm.Version.Version ) -> String
+dependencyPath init elmVersion ( name, version ) =
+    elmHome init
         ++ Elm.Version.toString elmVersion
         ++ "/packages/"
         ++ Elm.Package.toString name
         ++ "/"
         ++ Elm.Version.toString version
+        ++ "/"
 
 
 script : Script.Init -> Script String ()
@@ -161,6 +164,20 @@ script init =
 
         _ ->
             Script.printLine "Please provide exactly one argument that is the path to an elm.json file."
+
+
+elmHome : Script.Init -> String
+elmHome init =
+    let
+        default =
+            case init.platform of
+                Script.Platform.Posix _ ->
+                    "~/.elm/"
+
+                Script.Platform.Windows ->
+                    "%appdata%/elm/"
+    in
+    Script.Environment.get "ELM_HOME" init.environment |> Maybe.withDefault default
 
 
 main : Script.Program

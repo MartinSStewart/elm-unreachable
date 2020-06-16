@@ -68,10 +68,10 @@ isAbsolute : Platform -> String -> Bool
 isAbsolute platform pathString =
     case platform of
         Posix _ ->
-            String.startsWith "/" pathString
+            String.startsWith "/" pathString || String.startsWith "~" pathString
 
         Windows ->
-            String.startsWith "\\\\" pathString || startsAtWindowsDriveRoot pathString
+            String.startsWith "\\\\" pathString || startsAtWindowsDriveRoot pathString || String.startsWith "%" pathString
 
 
 startsAtWindowsDriveRoot : String -> Bool
