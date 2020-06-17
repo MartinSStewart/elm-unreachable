@@ -1,4 +1,16 @@
-module UnreachableCheck exposing (Dependency, DependencyRaw, dependencyPath, elmHome, getDependencyData, handleApplicationElmJson, handleDependencies, handlePackageElmJson, main, parseModule, script)
+module UnreachableCheck exposing
+    ( Dependency
+    , DependencyRaw
+    , dependencyPath
+    , elmHome
+    , getDependencyData
+    , handleApplicationElmJson
+    , handleDependencies
+    , handlePackageElmJson
+    , main
+    , parseModule
+    , script
+    )
 
 import Elm.Package
 import Elm.Parser
@@ -6,16 +18,14 @@ import Elm.Processing
 import Elm.Project exposing (Project(..))
 import Elm.RawFile
 import Elm.Syntax.File exposing (File)
-import Elm.Syntax.Module
 import Elm.Version
 import Json.Decode as JD
-import List.Extra as List
-import Script exposing (Script)
+import Parser
+import Script exposing (Script, UserPrivileges)
 import Script.Directory
 import Script.Environment
 import Script.File
 import Script.Platform
-import Time
 
 
 handleApplicationElmJson : String -> Result String Elm.Project.ApplicationInfo
@@ -58,30 +68,27 @@ type alias Dependency =
     }
 
 
-parseModule : Script.Init -> String -> Script String Elm.RawFile.RawFile
-parseModule init path =
-    Script.File.readOnly init.userPrivileges path
-        |> Script.File.read
-        |> Script.thenWith
-            (\text ->
-                case Elm.Parser.parse text of
-                    Ok rawFile ->
-                        Script.succeed rawFile
+parseModule : String -> Script String Elm.RawFile.RawFile
+parseModule text =
+    case Elm.Parser.parse text of
+        Ok rawFile ->
+            Script.succeed rawFile
 
-                    Err errors ->
-                        Script.fail ("Error parsing " ++ path ++ "\n" ++ String.join "\n" errors)
-            )
+        Err errors ->
+            Script.fail ("Error parsing " ++ text ++ "\n" ++ Parser.deadEndsToString errors)
 
 
-getDependencyData : Script.Init -> Elm.Project.ApplicationInfo -> ( Elm.Package.Name, Elm.Version.Version ) -> Script String DependencyRaw
+getDependencyData :
+    Script.Init
+    -> Elm.Project.ApplicationInfo
+    -> ( Elm.Package.Name, Elm.Version.Version )
+    -> Script String DependencyRaw
 getDependencyData init applicationInfo dependency =
     dependencyPath init applicationInfo.elm dependency
         ++ "src/"
-        |> Script.Directory.readOnly init.userPrivileges
-        |> Script.Directory.listFiles
-        |> Script.thenWith (List.map Script.File.read >> Script.sequence)
+        |> getFilesInDirectory init
         |> Script.thenWith
-            (List.map (parseModule init)
+            (List.map parseModule
                 >> Script.sequence
                 >> Script.map
                     (\rawFiles ->
@@ -90,6 +97,42 @@ getDependencyData init applicationInfo dependency =
                         , modules = rawFiles
                         }
                     )
+            )
+
+
+listAllFiles : Script.Directory.Directory permissions -> Script String (List (Script.File.File permissions))
+listAllFiles directory =
+    Script.map2 (++)
+        (Script.Directory.listFiles directory)
+        (Script.Directory.listSubdirs directory
+            |> Script.thenWith (List.map listAllFiles >> Script.sequence >> Script.map List.concat)
+        )
+
+
+getFilesInDirectory : Script.Init -> String -> Script String (List String)
+getFilesInDirectory init directoryPath =
+    directoryPath
+        |> Script.Directory.readOnly init.userPrivileges
+        |> listAllFiles
+        |> Script.map
+            (List.filterMap
+                (\file ->
+                    if String.endsWith ".elm" (Script.File.name file) then
+                        Just file
+
+                    else
+                        Nothing
+                )
+            )
+        |> Script.aside (\files -> List.map Script.File.name files |> String.join ", " |> Script.printLine)
+        |> Script.onError (\_ -> Script.fail <| "Failed to read directory " ++ directoryPath)
+        |> Script.thenWith
+            (List.map
+                (\file ->
+                    Script.File.read file
+                        |> Script.onError (\_ -> Script.fail <| "Failed to read module: " ++ Script.File.name file)
+                )
+                >> Script.sequence
             )
 
 
@@ -102,18 +145,16 @@ handleDependencies init applicationInfo =
         |> Script.collect (getDependencyData init applicationInfo)
 
 
-
---dependencyPath applicationInfo.elm dependency
---    ++ "/elm.json"
---    |> Script.File.readOnly init.userPrivileges
---    |> Script.File.read
---    |> Script.thenWith (\elmJsonText ->
---        case handlePackageElmJson elmJsonText of
---            Ok elmJson ->
---                elmJson.
---
---            Err error ->
---                Script.fail error
+handleUserCode : Script.Init -> Elm.Project.ApplicationInfo -> Script String (List Elm.RawFile.RawFile)
+handleUserCode init applicationInfo =
+    let
+        sourceDirectories =
+            applicationInfo.dirs
+    in
+    sourceDirectories
+        |> List.map (getFilesInDirectory init)
+        |> Script.sequence
+        |> Script.thenWith (List.concat >> List.map parseModule >> Script.sequence)
 
 
 dependencyPath : Script.Init -> Elm.Version.Version -> ( Elm.Package.Name, Elm.Version.Version ) -> String
@@ -127,12 +168,38 @@ dependencyPath init elmVersion ( name, version ) =
         ++ "/"
 
 
+parseAllModules : ( List Elm.RawFile.RawFile, List DependencyRaw ) -> ( List File, List Dependency )
+parseAllModules ( rawModules, rawDependencies ) =
+    let
+        context : Elm.Processing.ProcessContext
+        context =
+            rawDependencies
+                |> List.concatMap .modules
+                |> (++) rawModules
+                |> List.foldl Elm.Processing.addFile Elm.Processing.init
+
+        newDependencies : List Dependency
+        newDependencies =
+            List.map
+                (\{ name, version, modules } ->
+                    { name = name, version = version, modules = List.map (Elm.Processing.process context) modules }
+                )
+                rawDependencies
+
+        newModules : List File
+        newModules =
+            List.map (Elm.Processing.process context) rawModules
+    in
+    ( newModules, newDependencies )
+
+
 script : Script.Init -> Script String ()
 script init =
     case init.arguments of
         [ elmJsonPath ] ->
             Script.File.readOnly init.userPrivileges elmJsonPath
                 |> Script.File.read
+                |> Script.onError (\_ -> Script.fail <| "Failed to read " ++ elmJsonPath)
                 |> Script.thenWith
                     (\elmJson ->
                         case handleApplicationElmJson elmJson of
@@ -142,28 +209,22 @@ script init =
                             Err error ->
                                 Script.fail error
                     )
-                |> Script.thenWith (handleDependencies init)
-                |> Script.map
-                    (\dependencies ->
-                        let
-                            context : Elm.Processing.ProcessContext
-                            context =
-                                dependencies
-                                    |> List.map .modules
-                                    |> List.foldl
-                                        (\rawFile context -> Elm.Processing.addFile rawFile context)
-                                        Elm.Processing.init
-                        in
-                        List.map
-                            (\{ name, version, modules } ->
-                                { name = name, version = version, modules = List.map (Elm.Processing.process context) modules }
-                            )
-                            dependencies
+                |> Script.thenWith
+                    (\appInfo ->
+                        Script.map2 Tuple.pair
+                            (handleUserCode init appInfo)
+                            (handleDependencies init appInfo)
                     )
-                |> Script.andThen (Script.printLine "Success!")
+                |> Script.map (parseAllModules >> unreachableCheck)
+                |> Script.thenWith (\_ -> Script.printLine "Success!")
 
         _ ->
             Script.printLine "Please provide exactly one argument that is the path to an elm.json file."
+
+
+unreachableCheck : ( List File, List Dependency ) -> List String
+unreachableCheck ( modules, dependencies ) =
+    []
 
 
 elmHome : Script.Init -> String
@@ -172,7 +233,7 @@ elmHome init =
         default =
             case init.platform of
                 Script.Platform.Posix _ ->
-                    "~/.elm/"
+                    "/Users/martinstewart/.elm/"
 
                 Script.Platform.Windows ->
                     "%appdata%/elm/"
