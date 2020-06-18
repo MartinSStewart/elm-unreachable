@@ -6,6 +6,8 @@ unreachableCase () =
     unreachableCase ()
 
 
+{-| Assert that a `Maybe` is always a `Just` value.
+-}
 alwaysJust : Maybe a -> a
 alwaysJust maybe =
     case maybe of
@@ -16,6 +18,8 @@ alwaysJust maybe =
             unreachableCase ()
 
 
+{-| Assert that a `Result` is always an `Ok` value.
+-}
 alwaysOk : Result e a -> a
 alwaysOk result =
     case result of
@@ -26,6 +30,8 @@ alwaysOk result =
             unreachableCase ()
 
 
+{-| Assert that a `Result` is always an `Err` value.
+-}
 alwaysErr : Result e a -> e
 alwaysErr result =
     case result of

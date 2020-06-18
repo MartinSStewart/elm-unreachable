@@ -2,7 +2,8 @@
     "type": "application",
     "source-directories": [
         "src",
-        "../elm-script/src"
+        "../elm-script/src",
+        "../package/src"
     ],
     "elm-version": "0.19.1",
     "dependencies": {
@@ -20,10 +21,12 @@
             "elm-community/list-extra": "8.2.4",
             "ianmackenzie/elm-units": "2.5.1",
             "justinmimbs/date": "1.1.0",
+            "mgold/elm-nonempty-list": "4.1.0",
             "stil4m/elm-syntax": "7.1.2"
         },
         "indirect": {
             "elm/file": "1.0.5",
+            "elm/random": "1.0.0",
             "elm/url": "1.0.0",
             "elm/virtual-dom": "1.0.2",
             "elm-community/json-extra": "4.3.0",
@@ -33,7 +36,9 @@
         }
     },
     "test-dependencies": {
-        "direct": {},
+        "direct": {
+            "elm-explorations/test": "1.2.2"
+        },
         "indirect": {}
     }
 }

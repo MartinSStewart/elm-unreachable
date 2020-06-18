@@ -215,15 +215,15 @@ script init =
                             (handleUserCode init appInfo)
                             (handleDependencies init appInfo)
                     )
-                |> Script.map (parseAllModules >> unreachableCheck)
+                |> Script.map (parseAllModules >> findUnreachableCalls)
                 |> Script.thenWith (\_ -> Script.printLine "Success!")
 
         _ ->
             Script.printLine "Please provide exactly one argument that is the path to an elm.json file."
 
 
-unreachableCheck : ( List File, List Dependency ) -> List String
-unreachableCheck ( modules, dependencies ) =
+findUnreachableCalls : ( List File, List Dependency ) -> List String
+findUnreachableCalls ( modules, dependencies ) =
     []
 
 
