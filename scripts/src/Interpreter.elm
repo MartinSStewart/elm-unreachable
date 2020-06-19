@@ -20,17 +20,16 @@ type Value
     | AnonymousFunction_ Expression (List Value)
 
 
-visitorToList : (Node Expression -> Maybe a) -> Node Expression -> List ( Nonempty (Node Expression), a )
+visitorToList : (Node Expression -> Bool) -> Node Expression -> List (Nonempty (Node Expression))
 visitorToList visitor expression =
-    case visitor expression of
-        Just a ->
-            [ ( Nonempty.fromElement expression, a ) ]
+    if visitor expression then
+        [ Nonempty.fromElement expression ]
 
-        Nothing ->
-            []
+    else
+        []
 
 
-findUnreachableCalls : File -> List ( Nonempty (Node Expression), () )
+findUnreachableCalls : File -> List (Nonempty (Node Expression))
 findUnreachableCalls file =
     file.declarations
         |> List.filterMap
@@ -44,10 +43,10 @@ findUnreachableCalls file =
                                 (\(Node _ expression) ->
                                     case expression of
                                         Application [ Node _ (FunctionOrValue _ "unreachableCase"), Node _ UnitExpr ] ->
-                                            Just ()
+                                            True
 
                                         _ ->
-                                            Nothing
+                                            False
                                 )
                             |> Just
 
@@ -57,7 +56,7 @@ findUnreachableCalls file =
         |> List.concat
 
 
-visitExpression : (Node Expression -> Maybe a) -> Node Expression -> List ( Nonempty (Node Expression), a )
+visitExpression : (Node Expression -> Bool) -> Node Expression -> List (Nonempty (Node Expression))
 visitExpression visitor node =
     (case Node.value node of
         UnitExpr ->
