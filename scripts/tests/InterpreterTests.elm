@@ -2,56 +2,205 @@ module InterpreterTests exposing (..)
 
 import Elm.Parser
 import Elm.Processing
-import Elm.Syntax.Expression exposing (Expression(..))
+import Elm.Syntax.Expression as Expression exposing (Expression)
 import Elm.Syntax.File exposing (File)
-import Elm.Syntax.Node exposing (Node(..))
+import Elm.Syntax.Node as Node exposing (Node(..))
 import Elm.Syntax.Pattern exposing (Pattern(..))
+import Elm.Syntax.Range as Range
 import Expect
-import Interpreter
-import List.Nonempty exposing (Nonempty(..))
+import Interpreter exposing (CallTree(..))
+import List.Zipper exposing (Zipper)
 import Test exposing (..)
 import Unreachable
 
 
 simpleModule : File
 simpleModule =
-    """
-module A exposing (..)
+    """module A exposing (..)
 
-import Unreachable exposing (unreachableCase)
+import Unreachable exposing (unreachable)
 
 a =
     case True of
         True -> ()
-        False -> unreachableCase ()
+        False -> unreachable ()
 """
-        |> String.trim
         |> String.replace "\u{000D}\n" "\n"
         |> Elm.Parser.parse
         |> Result.map (Elm.Processing.process Elm.Processing.init)
         |> Unreachable.alwaysOk
 
 
-findUnreachableTest =
-    test "Find unreachable call" <|
-        \_ ->
-            Interpreter.findUnreachableCalls simpleModule
-                |> Expect.equal
-                    [ ( Nonempty
-                            (Node { end = { column = 36, row = 8 }, start = { column = 5, row = 6 } }
-                                (CaseExpression
-                                    { cases =
-                                        [ ( Node { end = { column = 13, row = 7 }, start = { column = 9, row = 7 } }
-                                                (NamedPattern { moduleName = [], name = "True" } [])
-                                          , Node { end = { column = 19, row = 7 }, start = { column = 17, row = 7 } } UnitExpr
-                                          )
-                                        , ( Node { end = { column = 14, row = 8 }, start = { column = 9, row = 8 } } (NamedPattern { moduleName = [], name = "False" } []), Node { end = { column = 36, row = 8 }, start = { column = 18, row = 8 } } (Application [ Node { end = { column = 33, row = 8 }, start = { column = 18, row = 8 } } (FunctionOrValue [] "unreachableCase"), Node { end = { column = 36, row = 8 }, start = { column = 34, row = 8 } } UnitExpr ]) )
-                                        ]
-                                    , expression = Node { end = { column = 14, row = 6 }, start = { column = 10, row = 6 } } (FunctionOrValue [] "True")
-                                    }
-                                )
-                            )
-                            [ Node { end = { column = 36, row = 8 }, start = { column = 18, row = 8 } } (Application [ Node { end = { column = 33, row = 8 }, start = { column = 18, row = 8 } } (FunctionOrValue [] "unreachableCase"), Node { end = { column = 36, row = 8 }, start = { column = 34, row = 8 } } UnitExpr ]) ]
-                      , ()
-                      )
-                    ]
+simpleModuleReachable : File
+simpleModuleReachable =
+    """module A exposing (..)
+
+import Unreachable exposing (unreachable)
+
+a =
+    case False of
+        True -> ()
+        False -> unreachable ()
+"""
+        |> String.replace "\u{000D}\n" "\n"
+        |> Elm.Parser.parse
+        |> Result.map (Elm.Processing.process Elm.Processing.init)
+        |> Unreachable.alwaysOk
+
+
+moduleAdditionUnreachable : File
+moduleAdditionUnreachable =
+    """module A exposing (..)
+
+import Unreachable exposing (unreachable)
+
+a =
+    case 2 + 5 of
+        6 -> unreachable ()
+        _ -> ()
+"""
+        |> String.replace "\u{000D}\n" "\n"
+        |> Elm.Parser.parse
+        |> Result.map (Elm.Processing.process Elm.Processing.init)
+        |> Unreachable.alwaysOk
+
+
+moduleAdditionReachable : File
+moduleAdditionReachable =
+    """module A exposing (..)
+
+import Unreachable exposing (unreachable)
+
+a =
+    case 2 + 5 of
+        7 -> unreachable ()
+        _ -> ()
+"""
+        |> String.replace "\u{000D}\n" "\n"
+        |> Elm.Parser.parse
+        |> Result.map (Elm.Processing.process Elm.Processing.init)
+        |> Unreachable.alwaysOk
+
+
+moduleAdditionBoth : File
+moduleAdditionBoth =
+    """module A exposing (..)
+
+import Unreachable exposing (unreachable)
+
+a =
+    case 2 of
+        7 -> unreachable ()
+        2 -> unreachable ()
+        _ -> ()
+"""
+        |> String.replace "\u{000D}\n" "\n"
+        |> Elm.Parser.parse
+        |> Result.map (Elm.Processing.process Elm.Processing.init)
+        |> Unreachable.alwaysOk
+
+
+moduleNestedCaseBlockUnreachable : File
+moduleNestedCaseBlockUnreachable =
+    """module A exposing (..)
+
+import Unreachable exposing (unreachable)
+
+a =
+    case True of 
+        True -> ()
+        False ->
+            case False of
+                True -> ()
+                False -> unreachable ()
+"""
+        |> String.replace "\u{000D}\n" "\n"
+        |> Elm.Parser.parse
+        |> Result.map (Elm.Processing.process Elm.Processing.init)
+        |> Unreachable.alwaysOk
+
+
+moduleNestedCaseBlockReachable : File
+moduleNestedCaseBlockReachable =
+    """module A exposing (..)
+
+import Unreachable exposing (unreachable)
+
+a =
+    case False of 
+        True -> ()
+        False ->
+            case False of
+                True -> ()
+                False -> unreachable ()
+"""
+        |> String.replace "\u{000D}\n" "\n"
+        |> Elm.Parser.parse
+        |> Result.map (Elm.Processing.process Elm.Processing.init)
+        |> Unreachable.alwaysOk
+
+
+removeExprFields : CallTree -> CallTree
+removeExprFields tree =
+    let
+        emptyExpr =
+            Node Range.emptyRange Expression.UnitExpr
+    in
+    case tree of
+        Unreachable_ { dependsOn } ->
+            { expr = emptyExpr, dependsOn = removeExprFields dependsOn } |> Unreachable_
+
+        CasePattern { dependsOn, caseOfDependsOn, patterns } ->
+            { expr = emptyExpr
+            , dependsOn = removeExprFields dependsOn
+            , caseOfDependsOn = caseOfDependsOn
+            , patterns = List.Zipper.map (Node.value >> Node Range.emptyRange) patterns
+            }
+                |> CasePattern
+
+        CaseOf { dependsOn } ->
+            { expr = emptyExpr, dependsOn = removeExprFields dependsOn } |> CaseOf
+
+        FunctionDeclaration_ { name } ->
+            { expr = emptyExpr, name = name } |> FunctionDeclaration_
+
+
+tests : Test
+tests =
+    describe "Interpreter tests"
+        [ test "Is unreachable" <|
+            \_ ->
+                Interpreter.visitFile simpleModule
+                    |> List.map Interpreter.visitTree
+                    |> Expect.equal [ Interpreter.Unreachable ]
+        , test "Is reachable" <|
+            \_ ->
+                Interpreter.visitFile simpleModuleReachable
+                    |> List.map Interpreter.visitTree
+                    |> Expect.equal [ Interpreter.Reachable ]
+        , test "Is unreachable 2" <|
+            \_ ->
+                Interpreter.visitFile moduleAdditionUnreachable
+                    |> List.map Interpreter.visitTree
+                    |> Expect.equal [ Interpreter.Unreachable ]
+        , test "Is reachable 2" <|
+            \_ ->
+                Interpreter.visitFile moduleAdditionReachable
+                    |> List.map Interpreter.visitTree
+                    |> Expect.equal [ Interpreter.Reachable ]
+        , test "Is both" <|
+            \_ ->
+                Interpreter.visitFile moduleAdditionBoth
+                    |> List.map Interpreter.visitTree
+                    |> Expect.equal [ Interpreter.Unreachable, Interpreter.Reachable ]
+        , test "Is nested case block unreachable" <|
+            \_ ->
+                Interpreter.visitFile moduleNestedCaseBlockUnreachable
+                    |> List.map Interpreter.visitTree
+                    |> Expect.equal [ Interpreter.Unreachable ]
+        , test "Is nested case block reachable" <|
+            \_ ->
+                Interpreter.visitFile moduleNestedCaseBlockReachable
+                    |> List.map Interpreter.visitTree
+                    |> Expect.equal [ Interpreter.Reachable ]
+        ]
