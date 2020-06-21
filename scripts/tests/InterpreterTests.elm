@@ -1,5 +1,6 @@
 module InterpreterTests exposing (..)
 
+import Dict
 import Elm.Parser
 import Elm.Processing
 import Elm.Syntax.Expression as Expression exposing (Expression)
@@ -165,42 +166,46 @@ removeExprFields tree =
             { expr = emptyExpr, name = name } |> FunctionDeclaration_
 
 
+scope =
+    Dict.empty
+
+
 tests : Test
 tests =
     describe "Interpreter tests"
         [ test "Is unreachable" <|
             \_ ->
                 Interpreter.visitFile simpleModule
-                    |> List.map Interpreter.visitTree
+                    |> List.map (Interpreter.visitTree scope)
                     |> Expect.equal [ Interpreter.Unreachable ]
         , test "Is reachable" <|
             \_ ->
                 Interpreter.visitFile simpleModuleReachable
-                    |> List.map Interpreter.visitTree
+                    |> List.map (Interpreter.visitTree scope)
                     |> Expect.equal [ Interpreter.Reachable ]
         , test "Is unreachable 2" <|
             \_ ->
                 Interpreter.visitFile moduleAdditionUnreachable
-                    |> List.map Interpreter.visitTree
+                    |> List.map (Interpreter.visitTree scope)
                     |> Expect.equal [ Interpreter.Unreachable ]
         , test "Is reachable 2" <|
             \_ ->
                 Interpreter.visitFile moduleAdditionReachable
-                    |> List.map Interpreter.visitTree
+                    |> List.map (Interpreter.visitTree scope)
                     |> Expect.equal [ Interpreter.Reachable ]
         , test "Is both" <|
             \_ ->
                 Interpreter.visitFile moduleAdditionBoth
-                    |> List.map Interpreter.visitTree
+                    |> List.map (Interpreter.visitTree scope)
                     |> Expect.equal [ Interpreter.Unreachable, Interpreter.Reachable ]
         , test "Is nested case block unreachable" <|
             \_ ->
                 Interpreter.visitFile moduleNestedCaseBlockUnreachable
-                    |> List.map Interpreter.visitTree
+                    |> List.map (Interpreter.visitTree scope)
                     |> Expect.equal [ Interpreter.Unreachable ]
         , test "Is nested case block reachable" <|
             \_ ->
                 Interpreter.visitFile moduleNestedCaseBlockReachable
-                    |> List.map Interpreter.visitTree
+                    |> List.map (Interpreter.visitTree scope)
                     |> Expect.equal [ Interpreter.Reachable ]
         ]
