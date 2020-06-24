@@ -7,15 +7,17 @@ import Elm.Syntax.File exposing (File)
 import Elm.Syntax.Node as Node exposing (Node(..))
 import Elm.Syntax.Pattern as Pattern exposing (Pattern)
 import Elm.Syntax.Range
-import List.Extra
-import List.Zipper exposing (Zipper)
+import List.Extra as List
 
 
 type CallTree
-    = Unreachable_ { expr : Node Expression, dependsOn : CallTree }
-    | CasePattern { expr : Node Expression, dependsOn : CallTree, caseOfDependsOn : Node Expression, patterns : Zipper (Node Pattern) }
-    | CaseOf { expr : Node Expression, dependsOn : CallTree }
-    | FunctionDeclaration_ { expr : Node Expression, name : String }
+    = Unreachable_ { expr : Node Expression }
+    | CasePattern
+        { expr : Node Expression
+        , caseOfDependsOn : Node Expression
+        , children : List ( Node Pattern, Maybe CallTree )
+        }
+    | FunctionDeclaration_ { expr : Node Expression, name : String, child : CallTree }
 
 
 type Reachability
@@ -181,11 +183,6 @@ handleOperatorApplication scope expression operator left right =
                 ( Expression.Literal a, Expression.Literal b ) ->
                     a ++ b |> Expression.Literal
 
-                _ ->
-                    Debug.todo ""
-
-        "++" ->
-            case ( simplifyExpression scope left |> Node.value, simplifyExpression scope right |> Node.value ) of
                 ( Expression.ListExpr a, Expression.ListExpr b ) ->
                     a ++ b |> Expression.ListExpr
 
@@ -294,10 +291,10 @@ simplifyExpression scope (Node _ expression) =
         Expression.IfBlock condition ifTrue ifFalse ->
             case simplifyExpression scope condition |> Node.value of
                 Expression.FunctionOrValue _ "True" ->
-                    simplifyExpression scope ifTrue
+                    simplifyExpression scope ifTrue |> Node.value
 
                 Expression.FunctionOrValue _ "False" ->
-                    simplifyExpression scope ifFalse
+                    simplifyExpression scope ifFalse |> Node.value
 
                 _ ->
                     Debug.todo ""
@@ -514,44 +511,46 @@ expressionFitsPattern (Node _ expression) ((Node _ pattern) as patternNode) =
             False
 
 
-patternMatches : Zipper (Node Pattern) -> Node Expression -> Bool
-patternMatches zipper node =
-    List.Zipper.findFirst (expressionFitsPattern node) zipper
-        |> (==) (Just zipper)
+type PatternMatch
+    = FoundMatch ( Node Pattern, Maybe CallTree )
+    | FailedToSimplify
+
+
+patternMatches : List ( Node Pattern, Maybe CallTree ) -> Node Expression -> PatternMatch
+patternMatches patterns node =
+    case List.find (Tuple.first >> expressionFitsPattern node) patterns of
+        Just a ->
+            FoundMatch a
+
+        Nothing ->
+            FailedToSimplify
 
 
 visitTree : Scope -> CallTree -> Reachability
 visitTree scope tree =
     case tree of
-        Unreachable_ { dependsOn } ->
-            visitTree scope dependsOn
+        Unreachable_ _ ->
+            Reachable
 
-        CasePattern { dependsOn, caseOfDependsOn, patterns } ->
-            case
-                ( visitTree scope dependsOn
-                , simplifyExpression scope caseOfDependsOn |> patternMatches patterns
-                )
-            of
-                ( Reachable, True ) ->
-                    Reachable
+        CasePattern { children, caseOfDependsOn } ->
+            case patternMatches children (simplifyExpression scope caseOfDependsOn) of
+                FoundMatch ( _, Just child ) ->
+                    visitTree scope child
 
-                ( Reachable, False ) ->
+                FoundMatch ( _, Nothing ) ->
                     Unreachable
 
-                ( reachable, _ ) ->
-                    reachable
+                FailedToSimplify ->
+                    Unknown
 
-        CaseOf { dependsOn } ->
-            Debug.todo "CaseOf tree"
-
-        FunctionDeclaration_ { name } ->
-            Reachable
+        FunctionDeclaration_ { name, child } ->
+            visitTree scope child
 
 
 visitFile : File -> List CallTree
 visitFile file =
     file.declarations
-        |> List.map
+        |> List.filterMap
             (\(Node _ declaration) ->
                 case declaration of
                     FunctionDeclaration function ->
@@ -562,136 +561,139 @@ visitFile file =
                         declaration_.expression |> visitExpression (Node.value declaration_.name)
 
                     _ ->
-                        []
+                        Nothing
             )
-        |> List.concat
 
 
-visitExpression : String -> Node Expression -> List CallTree
+visitExpression : String -> Node Expression -> Maybe CallTree
 visitExpression functionName node =
     visitExpressionHelper
         node
-        |> List.map (\tree -> FunctionDeclaration_ { expr = node, name = functionName } |> tree)
+        |> Maybe.map
+            (\child ->
+                FunctionDeclaration_
+                    { expr = node
+                    , name = functionName
+                    , child = child
+                    }
+            )
 
 
-wrapTree : (CallTree -> CallTree) -> List (CallTree -> CallTree) -> List (CallTree -> CallTree)
-wrapTree wrapWith =
-    List.map (\tree -> wrapWith >> tree)
-
-
-visitExpressionHelper : Node Expression -> List (CallTree -> CallTree)
+visitExpressionHelper : Node Expression -> Maybe CallTree
 visitExpressionHelper node =
     case Node.value node of
         Expression.UnitExpr ->
-            []
+            Nothing
 
-        Expression.Application nodes ->
-            List.concatMap visitExpressionHelper nodes
+        Expression.Application [ Node _ (Expression.FunctionOrValue _ "unreachable"), Node _ Expression.UnitExpr ] ->
+            Unreachable_ { expr = node } |> Just
 
+        Expression.Application _ ->
+            Debug.todo ""
+
+        --List.concatMap visitExpressionHelper nodes
         Expression.OperatorApplication _ _ left right ->
-            visitExpressionHelper left
-                ++ visitExpressionHelper right
+            Debug.todo ""
 
+        --visitExpressionHelper left
+        --    ++ visitExpressionHelper right
         Expression.FunctionOrValue _ name ->
-            if name == "unreachable" then
-                [ \tree -> Unreachable_ { expr = node, dependsOn = tree } ]
-
-            else
-                []
+            Debug.todo ""
 
         Expression.IfBlock condition ifTrue ifFalse ->
-            visitExpressionHelper condition
-                ++ visitExpressionHelper ifTrue
-                ++ visitExpressionHelper ifFalse
+            Debug.todo ""
 
+        --visitExpressionHelper condition
+        --    ++ visitExpressionHelper ifTrue
+        --    ++ visitExpressionHelper ifFalse
         Expression.PrefixOperator _ ->
-            []
+            Nothing
 
         Expression.Operator _ ->
-            []
+            Nothing
 
         Expression.Integer _ ->
-            []
+            Nothing
 
         Expression.Hex _ ->
-            []
+            Nothing
 
         Expression.Floatable _ ->
-            []
+            Nothing
 
         Expression.Negation node_ ->
             visitExpressionHelper node_
 
         Expression.Literal _ ->
-            []
+            Nothing
 
         Expression.CharLiteral _ ->
-            []
+            Nothing
 
         Expression.TupledExpression nodes ->
-            List.concatMap visitExpressionHelper nodes
+            Debug.todo ""
 
+        --List.concatMap visitExpressionHelper nodes
         Expression.ParenthesizedExpression node_ ->
             visitExpressionHelper node_
 
         Expression.LetExpression letBlock ->
-            List.concatMap
-                (\(Node _ declaration) ->
-                    case declaration of
-                        LetFunction function ->
-                            function.declaration |> Node.value |> .expression |> visitExpressionHelper
+            Debug.todo ""
 
-                        LetDestructuring _ letFunction ->
-                            visitExpressionHelper letFunction
-                )
-                letBlock.declarations
-                ++ visitExpressionHelper letBlock.expression
-
+        --List.concatMap
+        --    (\(Node _ declaration) ->
+        --        case declaration of
+        --            LetFunction function ->
+        --                function.declaration |> Node.value |> .expression |> visitExpressionHelper
+        --
+        --            LetDestructuring _ letFunction ->
+        --                visitExpressionHelper letFunction
+        --    )
+        --    letBlock.declarations
+        --    ++ visitExpressionHelper letBlock.expression
         Expression.CaseExpression caseBlock ->
             let
-                patterns : List (Node Pattern)
+                patterns : List ( Node Pattern, Maybe CallTree )
                 patterns =
-                    caseBlock.cases |> List.map Tuple.first
+                    List.map
+                        (\( pattern, expression ) ->
+                            ( pattern, visitExpressionHelper expression )
+                        )
+                        caseBlock.cases
             in
-            visitExpressionHelper caseBlock.expression
-                ++ List.concatMap
-                    (\( pattern, expression ) ->
-                        let
-                            zipper =
-                                List.Extra.findIndex ((==) pattern) patterns
-                                    |> Maybe.withDefault 0
-                                    |> (\splitIndex -> List.Extra.splitAt splitIndex patterns)
-                                    |> (\( first, second ) -> List.Zipper.from first pattern (List.drop 1 second))
+            --visitExpressionHelper caseBlock.expression
+            if List.any (Tuple.second >> (/=) Nothing) patterns then
+                CasePattern
+                    { expr = node
+                    , caseOfDependsOn = caseBlock.expression
+                    , children =
+                        patterns
+                    }
+                    |> Just
 
-                            wrapWith tree =
-                                CasePattern
-                                    { expr = node
-                                    , dependsOn = tree
-                                    , caseOfDependsOn = caseBlock.expression
-                                    , patterns = zipper
-                                    }
-                        in
-                        visitExpressionHelper expression |> wrapTree wrapWith
-                    )
-                    caseBlock.cases
+            else
+                Nothing
 
         Expression.LambdaExpression lambda ->
             visitExpressionHelper lambda.expression
 
         Expression.RecordExpr nodes ->
-            List.concatMap (Node.value >> Tuple.second >> visitExpressionHelper) nodes
+            Debug.todo ""
 
+        --List.concatMap (Node.value >> Tuple.second >> visitExpressionHelper) nodes
         Expression.ListExpr nodes ->
-            List.concatMap visitExpressionHelper nodes
+            Debug.todo ""
 
+        --List.concatMap visitExpressionHelper nodes
         Expression.RecordAccess node_ _ ->
             visitExpressionHelper node_
 
         Expression.RecordAccessFunction _ ->
-            []
+            Nothing
 
         Expression.RecordUpdateExpression _ nodes ->
-            List.concatMap (Node.value >> Tuple.second >> visitExpressionHelper) nodes
+            Debug.todo ""
 
+        --List.concatMap (Node.value >> Tuple.second >> visitExpressionHelper) nodes
         Expression.GLSLExpression _ ->
-            []
+            Nothing

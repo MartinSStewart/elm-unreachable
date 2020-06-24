@@ -3,6 +3,7 @@ module InterpreterTests exposing (..)
 import Dict
 import Elm.Parser
 import Elm.Processing
+import Elm.Syntax.Declaration exposing (Declaration(..))
 import Elm.Syntax.Expression as Expression exposing (Expression)
 import Elm.Syntax.File exposing (File)
 import Elm.Syntax.Node as Node exposing (Node(..))
@@ -148,26 +149,25 @@ removeExprFields tree =
             Node Range.emptyRange Expression.UnitExpr
     in
     case tree of
-        Unreachable_ { dependsOn } ->
-            { expr = emptyExpr, dependsOn = removeExprFields dependsOn } |> Unreachable_
+        Unreachable_ _ ->
+            { expr = emptyExpr } |> Unreachable_
 
-        CasePattern { dependsOn, caseOfDependsOn, patterns } ->
+        CasePattern { children, caseOfDependsOn } ->
             { expr = emptyExpr
-            , dependsOn = removeExprFields dependsOn
+            , children =
+                List.map
+                    (Tuple.mapBoth (Node.value >> Node Range.emptyRange) (Maybe.map removeExprFields))
+                    children
             , caseOfDependsOn = caseOfDependsOn
-            , patterns = List.Zipper.map (Node.value >> Node Range.emptyRange) patterns
             }
                 |> CasePattern
 
-        CaseOf { dependsOn } ->
-            { expr = emptyExpr, dependsOn = removeExprFields dependsOn } |> CaseOf
-
-        FunctionDeclaration_ { name } ->
-            { expr = emptyExpr, name = name } |> FunctionDeclaration_
+        FunctionDeclaration_ { name, child } ->
+            { expr = emptyExpr, name = name, child = removeExprFields child } |> FunctionDeclaration_
 
 
 scope =
-    Dict.empty
+    { topLevel = Dict.empty }
 
 
 tests : Test
@@ -175,7 +175,7 @@ tests =
     describe "Interpreter tests"
         [ test "Is unreachable" <|
             \_ ->
-                Interpreter.visitFile simpleModule
+                Interpreter.visitFile (Debug.log "simple" simpleModule)
                     |> List.map (Interpreter.visitTree scope)
                     |> Expect.equal [ Interpreter.Unreachable ]
         , test "Is reachable" <|
@@ -193,11 +193,11 @@ tests =
                 Interpreter.visitFile moduleAdditionReachable
                     |> List.map (Interpreter.visitTree scope)
                     |> Expect.equal [ Interpreter.Reachable ]
-        , test "Is both" <|
+        , test "At least one is reachable" <|
             \_ ->
                 Interpreter.visitFile moduleAdditionBoth
                     |> List.map (Interpreter.visitTree scope)
-                    |> Expect.equal [ Interpreter.Unreachable, Interpreter.Reachable ]
+                    |> Expect.equal [ Interpreter.Reachable ]
         , test "Is nested case block unreachable" <|
             \_ ->
                 Interpreter.visitFile moduleNestedCaseBlockUnreachable
