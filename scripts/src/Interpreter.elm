@@ -4,6 +4,7 @@ import Dict exposing (Dict)
 import Elm.Syntax.Declaration exposing (Declaration(..))
 import Elm.Syntax.Expression as Expression exposing (Expression, LetDeclaration(..))
 import Elm.Syntax.File exposing (File)
+import Elm.Syntax.ModuleName exposing (ModuleName)
 import Elm.Syntax.Node as Node exposing (Node(..))
 import Elm.Syntax.Pattern as Pattern exposing (Pattern)
 import Elm.Syntax.Range
@@ -269,6 +270,11 @@ handleOperatorApplication scope expression operator left right =
             Debug.todo ""
 
 
+getFunction : Scope -> ModuleName -> String -> Maybe (Node Expression)
+getFunction scope moduleName functionName =
+    Dict.get functionName scope.topLevel |> Maybe.map (.declaration >> Node.value >> .expression)
+
+
 simplifyExpression : Scope -> Node Expression -> Node Expression
 simplifyExpression scope (Node _ expression) =
     (case expression of
@@ -286,7 +292,12 @@ simplifyExpression scope (Node _ expression) =
                 expression
 
             else
-                Debug.todo ""
+                case getFunction scope moduleName name of
+                    Just functionExpression ->
+                        simplifyExpression scope functionExpression |> Node.value
+
+                    Nothing ->
+                        Debug.todo ""
 
         Expression.IfBlock condition ifTrue ifFalse ->
             case simplifyExpression scope condition |> Node.value of
@@ -526,8 +537,13 @@ patternMatches patterns node =
             FailedToSimplify
 
 
-visitTree : Scope -> CallTree -> Reachability
-visitTree scope tree =
+visitTree : ( Scope, List CallTree ) -> List Reachability
+visitTree ( scope, trees ) =
+    List.map (\tree -> visitTreeHelper scope tree) trees
+
+
+visitTreeHelper : Scope -> CallTree -> Reachability
+visitTreeHelper scope tree =
     case tree of
         Unreachable_ _ ->
             Reachable
@@ -535,7 +551,7 @@ visitTree scope tree =
         CasePattern { children, caseOfDependsOn } ->
             case patternMatches children (simplifyExpression scope caseOfDependsOn) of
                 FoundMatch ( _, Just child ) ->
-                    visitTree scope child
+                    visitTreeHelper scope child
 
                 FoundMatch ( _, Nothing ) ->
                     Unreachable
@@ -544,12 +560,13 @@ visitTree scope tree =
                     Unknown
 
         FunctionDeclaration_ { name, child } ->
-            visitTree scope child
+            visitTreeHelper scope child
 
 
-visitFile : File -> List CallTree
+visitFile : File -> ( Scope, List CallTree )
 visitFile file =
-    file.declarations
+    ( getBaseScope file
+    , file.declarations
         |> List.filterMap
             (\(Node _ declaration) ->
                 case declaration of
@@ -563,6 +580,7 @@ visitFile file =
                     _ ->
                         Nothing
             )
+    )
 
 
 visitExpression : String -> Node Expression -> Maybe CallTree
@@ -597,8 +615,8 @@ visitExpressionHelper node =
 
         --visitExpressionHelper left
         --    ++ visitExpressionHelper right
-        Expression.FunctionOrValue _ name ->
-            Debug.todo ""
+        Expression.FunctionOrValue moduleName name ->
+            Nothing
 
         Expression.IfBlock condition ifTrue ifFalse ->
             Debug.todo ""

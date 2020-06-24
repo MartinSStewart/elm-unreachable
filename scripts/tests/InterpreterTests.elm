@@ -27,10 +27,7 @@ a =
         True -> ()
         False -> unreachable ()
 """
-        |> String.replace "\u{000D}\n" "\n"
-        |> Elm.Parser.parse
-        |> Result.map (Elm.Processing.process Elm.Processing.init)
-        |> Unreachable.alwaysOk
+        |> parseCode
 
 
 simpleModuleReachable : File
@@ -44,10 +41,7 @@ a =
         True -> ()
         False -> unreachable ()
 """
-        |> String.replace "\u{000D}\n" "\n"
-        |> Elm.Parser.parse
-        |> Result.map (Elm.Processing.process Elm.Processing.init)
-        |> Unreachable.alwaysOk
+        |> parseCode
 
 
 moduleAdditionUnreachable : File
@@ -61,10 +55,7 @@ a =
         6 -> unreachable ()
         _ -> ()
 """
-        |> String.replace "\u{000D}\n" "\n"
-        |> Elm.Parser.parse
-        |> Result.map (Elm.Processing.process Elm.Processing.init)
-        |> Unreachable.alwaysOk
+        |> parseCode
 
 
 moduleAdditionReachable : File
@@ -78,10 +69,7 @@ a =
         7 -> unreachable ()
         _ -> ()
 """
-        |> String.replace "\u{000D}\n" "\n"
-        |> Elm.Parser.parse
-        |> Result.map (Elm.Processing.process Elm.Processing.init)
-        |> Unreachable.alwaysOk
+        |> parseCode
 
 
 moduleAdditionBoth : File
@@ -96,10 +84,7 @@ a =
         2 -> unreachable ()
         _ -> ()
 """
-        |> String.replace "\u{000D}\n" "\n"
-        |> Elm.Parser.parse
-        |> Result.map (Elm.Processing.process Elm.Processing.init)
-        |> Unreachable.alwaysOk
+        |> parseCode
 
 
 moduleNestedCaseBlockUnreachable : File
@@ -116,10 +101,7 @@ a =
                 True -> ()
                 False -> unreachable ()
 """
-        |> String.replace "\u{000D}\n" "\n"
-        |> Elm.Parser.parse
-        |> Result.map (Elm.Processing.process Elm.Processing.init)
-        |> Unreachable.alwaysOk
+        |> parseCode
 
 
 moduleNestedCaseBlockReachable : File
@@ -136,10 +118,46 @@ a =
                 True -> ()
                 False -> unreachable ()
 """
-        |> String.replace "\u{000D}\n" "\n"
-        |> Elm.Parser.parse
-        |> Result.map (Elm.Processing.process Elm.Processing.init)
-        |> Unreachable.alwaysOk
+        |> parseCode
+
+
+moduleFunctionCallUnreachable : File
+moduleFunctionCallUnreachable =
+    """module A exposing (..)
+
+import Unreachable exposing (unreachable)
+
+b = True
+
+a =
+    case b of 
+        True -> ()
+        False -> unreachable ()
+"""
+        |> parseCode
+
+
+moduleFunctionCallReachable : File
+moduleFunctionCallReachable =
+    """module A exposing (..)
+
+import Unreachable exposing (unreachable)
+
+b = False
+
+a =
+    case b of 
+        True -> ()
+        False -> unreachable ()
+"""
+        |> parseCode
+
+
+parseCode =
+    String.replace "\u{000D}\n" "\n"
+        >> Elm.Parser.parse
+        >> Result.map (Elm.Processing.process Elm.Processing.init)
+        >> Unreachable.alwaysOk
 
 
 removeExprFields : CallTree -> CallTree
@@ -166,46 +184,52 @@ removeExprFields tree =
             { expr = emptyExpr, name = name, child = removeExprFields child } |> FunctionDeclaration_
 
 
-scope =
-    { topLevel = Dict.empty }
-
-
 tests : Test
 tests =
     describe "Interpreter tests"
         [ test "Is unreachable" <|
             \_ ->
                 Interpreter.visitFile (Debug.log "simple" simpleModule)
-                    |> List.map (Interpreter.visitTree scope)
+                    |> Interpreter.visitTree
                     |> Expect.equal [ Interpreter.Unreachable ]
         , test "Is reachable" <|
             \_ ->
                 Interpreter.visitFile simpleModuleReachable
-                    |> List.map (Interpreter.visitTree scope)
+                    |> Interpreter.visitTree
                     |> Expect.equal [ Interpreter.Reachable ]
         , test "Is unreachable 2" <|
             \_ ->
                 Interpreter.visitFile moduleAdditionUnreachable
-                    |> List.map (Interpreter.visitTree scope)
+                    |> Interpreter.visitTree
                     |> Expect.equal [ Interpreter.Unreachable ]
         , test "Is reachable 2" <|
             \_ ->
                 Interpreter.visitFile moduleAdditionReachable
-                    |> List.map (Interpreter.visitTree scope)
+                    |> Interpreter.visitTree
                     |> Expect.equal [ Interpreter.Reachable ]
         , test "At least one is reachable" <|
             \_ ->
                 Interpreter.visitFile moduleAdditionBoth
-                    |> List.map (Interpreter.visitTree scope)
+                    |> Interpreter.visitTree
                     |> Expect.equal [ Interpreter.Reachable ]
         , test "Is nested case block unreachable" <|
             \_ ->
                 Interpreter.visitFile moduleNestedCaseBlockUnreachable
-                    |> List.map (Interpreter.visitTree scope)
+                    |> Interpreter.visitTree
                     |> Expect.equal [ Interpreter.Unreachable ]
         , test "Is nested case block reachable" <|
             \_ ->
                 Interpreter.visitFile moduleNestedCaseBlockReachable
-                    |> List.map (Interpreter.visitTree scope)
+                    |> Interpreter.visitTree
+                    |> Expect.equal [ Interpreter.Reachable ]
+        , test "Is function call unreachable" <|
+            \_ ->
+                Interpreter.visitFile moduleFunctionCallUnreachable
+                    |> Interpreter.visitTree
+                    |> Expect.equal [ Interpreter.Unreachable ]
+        , test "Is function call reachable" <|
+            \_ ->
+                Interpreter.visitFile moduleFunctionCallReachable
+                    |> Interpreter.visitTree
                     |> Expect.equal [ Interpreter.Reachable ]
         ]
