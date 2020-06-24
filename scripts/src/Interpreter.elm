@@ -25,11 +25,31 @@ type Reachability
 
 
 type alias Scope =
-    Dict String Expression
+    { topLevel : Dict String Expression.Function
+    }
 
 
-simplifyExpression : Scope -> Node Expression -> Node Expression
-simplifyExpression scope (Node _ expression) =
+getBaseScope : File -> Scope
+getBaseScope file =
+    file.declarations
+        |> List.filterMap
+            (\(Node _ declaration) ->
+                case declaration of
+                    FunctionDeclaration function ->
+                        Just
+                            ( Node.value function.declaration |> .name |> Node.value
+                            , function
+                            )
+
+                    _ ->
+                        Nothing
+            )
+        |> Dict.fromList
+        |> Scope
+
+
+handleOperatorApplication : Scope -> Expression -> String -> Node Expression -> Node Expression -> Expression
+handleOperatorApplication scope expression operator left right =
     let
         comparisonCheck : (Int -> Int -> Bool) -> (Float -> Float -> Bool) -> Expression -> Expression -> Expression
         comparisonCheck comparisonInt comparisonFloat c d =
@@ -83,172 +103,142 @@ simplifyExpression scope (Node _ expression) =
                 _ ->
                     expression
     in
-    (case expression of
-        Expression.UnitExpr ->
-            expression
+    case operator of
+        "|>" ->
+            case Node.value right of
+                Expression.Application application ->
+                    application
+                        ++ [ left ]
+                        |> Expression.Application
+                        |> Node Elm.Syntax.Range.emptyRange
+                        |> simplifyExpression scope
+                        |> Node.value
 
-        Expression.Application nodes ->
-            List.map (simplifyExpression scope) nodes |> Debug.todo ""
+                _ ->
+                    Debug.todo ""
 
-        Expression.OperatorApplication operator _ left right ->
-            case operator of
-                "|>" ->
-                    case Node.value right of
-                        Expression.Application application ->
-                            application
-                                ++ [ left ]
-                                |> Expression.Application
-                                |> Node Elm.Syntax.Range.emptyRange
-                                |> simplifyExpression scope
-                                |> Node.value
+        "<|" ->
+            case Node.value left of
+                Expression.Application application ->
+                    application
+                        ++ [ right ]
+                        |> Expression.Application
+                        |> Node Elm.Syntax.Range.emptyRange
+                        |> simplifyExpression scope
+                        |> Node.value
 
-                        _ ->
-                            Debug.todo ""
+                _ ->
+                    Debug.todo ""
 
-                "<|" ->
-                    case Node.value left of
-                        Expression.Application application ->
-                            application
-                                ++ [ right ]
-                                |> Expression.Application
-                                |> Node Elm.Syntax.Range.emptyRange
-                                |> simplifyExpression scope
-                                |> Node.value
+        "+" ->
+            numberMath (+)
+                (+)
+                (simplifyExpression scope left |> Node.value)
+                (simplifyExpression scope right |> Node.value)
 
-                        _ ->
-                            Debug.todo ""
+        "-" ->
+            numberMath (-)
+                (-)
+                (simplifyExpression scope left |> Node.value)
+                (simplifyExpression scope right |> Node.value)
 
-                "+" ->
-                    numberMath (+)
-                        (+)
-                        (simplifyExpression scope left |> Node.value)
-                        (simplifyExpression scope right |> Node.value)
+        "*" ->
+            numberMath (*)
+                (*)
+                (simplifyExpression scope left |> Node.value)
+                (simplifyExpression scope right |> Node.value)
 
-                "-" ->
-                    numberMath (-)
-                        (-)
-                        (simplifyExpression scope left |> Node.value)
-                        (simplifyExpression scope right |> Node.value)
+        "//" ->
+            case ( simplifyExpression scope left |> Node.value, simplifyExpression scope right |> Node.value ) of
+                ( Expression.Integer a, Expression.Integer b ) ->
+                    a // b |> Expression.Integer
 
-                "*" ->
-                    numberMath (*)
-                        (*)
-                        (simplifyExpression scope left |> Node.value)
-                        (simplifyExpression scope right |> Node.value)
+                _ ->
+                    Debug.todo ""
 
-                "//" ->
-                    case ( simplifyExpression scope left |> Node.value, simplifyExpression scope right |> Node.value ) of
-                        ( Expression.Integer a, Expression.Integer b ) ->
-                            a // b |> Expression.Integer
+        "/" ->
+            case ( simplifyExpression scope left |> Node.value, simplifyExpression scope right |> Node.value ) of
+                ( Expression.Floatable a, Expression.Floatable b ) ->
+                    a / b |> Expression.Floatable
 
-                        _ ->
-                            Debug.todo ""
+                ( Expression.Integer a, Expression.Floatable b ) ->
+                    toFloat a / b |> Expression.Floatable
 
-                "/" ->
-                    case ( simplifyExpression scope left |> Node.value, simplifyExpression scope right |> Node.value ) of
-                        ( Expression.Floatable a, Expression.Floatable b ) ->
-                            a / b |> Expression.Floatable
+                ( Expression.Floatable a, Expression.Integer b ) ->
+                    a / toFloat b |> Expression.Floatable
 
-                        ( Expression.Integer a, Expression.Floatable b ) ->
-                            toFloat a / b |> Expression.Floatable
+                _ ->
+                    Debug.todo ""
 
-                        ( Expression.Floatable a, Expression.Integer b ) ->
-                            a / toFloat b |> Expression.Floatable
+        "^" ->
+            numberMath (^)
+                (^)
+                (simplifyExpression scope left |> Node.value)
+                (simplifyExpression scope right |> Node.value)
 
-                        _ ->
-                            Debug.todo ""
+        "++" ->
+            case ( simplifyExpression scope left |> Node.value, simplifyExpression scope right |> Node.value ) of
+                ( Expression.Literal a, Expression.Literal b ) ->
+                    a ++ b |> Expression.Literal
 
-                "^" ->
-                    numberMath (^)
-                        (^)
-                        (simplifyExpression scope left |> Node.value)
-                        (simplifyExpression scope right |> Node.value)
+                _ ->
+                    Debug.todo ""
 
-                "++" ->
-                    case ( simplifyExpression scope left |> Node.value, simplifyExpression scope right |> Node.value ) of
-                        ( Expression.Literal a, Expression.Literal b ) ->
-                            a ++ b |> Expression.Literal
+        "++" ->
+            case ( simplifyExpression scope left |> Node.value, simplifyExpression scope right |> Node.value ) of
+                ( Expression.ListExpr a, Expression.ListExpr b ) ->
+                    a ++ b |> Expression.ListExpr
 
-                        _ ->
-                            Debug.todo ""
+                _ ->
+                    Debug.todo ""
 
-                "++" ->
-                    case ( simplifyExpression scope left |> Node.value, simplifyExpression scope right |> Node.value ) of
-                        ( Expression.ListExpr a, Expression.ListExpr b ) ->
-                            a ++ b |> Expression.ListExpr
+        "::" ->
+            case ( simplifyExpression scope left |> Node.value, simplifyExpression scope right |> Node.value ) of
+                ( a, Expression.ListExpr b ) ->
+                    Node Elm.Syntax.Range.emptyRange a :: b |> Expression.ListExpr
 
-                        _ ->
-                            Debug.todo ""
+                _ ->
+                    Debug.todo ""
 
-                "::" ->
-                    case ( simplifyExpression scope left |> Node.value, simplifyExpression scope right |> Node.value ) of
-                        ( a, Expression.ListExpr b ) ->
-                            Node Elm.Syntax.Range.emptyRange a :: b |> Expression.ListExpr
+        "==" ->
+            Debug.todo "equals"
 
-                        _ ->
-                            Debug.todo ""
+        "/=" ->
+            Debug.todo "not equals"
 
-                "==" ->
-                    Debug.todo "equals"
+        ">" ->
+            comparisonCheck (>)
+                (>)
+                (simplifyExpression scope left |> Node.value)
+                (simplifyExpression scope right |> Node.value)
 
-                "/=" ->
-                    Debug.todo "not equals"
+        "<" ->
+            comparisonCheck (<)
+                (<)
+                (simplifyExpression scope left |> Node.value)
+                (simplifyExpression scope right |> Node.value)
 
-                ">" ->
-                    comparisonCheck (>)
-                        (>)
-                        (simplifyExpression scope left |> Node.value)
-                        (simplifyExpression scope right |> Node.value)
+        ">=" ->
+            comparisonCheck (>=)
+                (>=)
+                (simplifyExpression scope left |> Node.value)
+                (simplifyExpression scope right |> Node.value)
 
-                "<" ->
-                    comparisonCheck (<)
-                        (<)
-                        (simplifyExpression scope left |> Node.value)
-                        (simplifyExpression scope right |> Node.value)
+        "<=" ->
+            comparisonCheck (<=)
+                (<=)
+                (simplifyExpression scope left |> Node.value)
+                (simplifyExpression scope right |> Node.value)
 
-                ">=" ->
-                    comparisonCheck (>=)
-                        (>=)
-                        (simplifyExpression scope left |> Node.value)
-                        (simplifyExpression scope right |> Node.value)
+        "||" ->
+            case simplifyExpression scope left |> Node.value of
+                Expression.FunctionOrValue _ "True" ->
+                    Expression.FunctionOrValue [] "True"
 
-                "<=" ->
-                    comparisonCheck (<=)
-                        (<=)
-                        (simplifyExpression scope left |> Node.value)
-                        (simplifyExpression scope right |> Node.value)
-
-                "||" ->
-                    case simplifyExpression scope left |> Node.value of
+                Expression.FunctionOrValue _ "False" ->
+                    case simplifyExpression scope right |> Node.value of
                         Expression.FunctionOrValue _ "True" ->
                             Expression.FunctionOrValue [] "True"
-
-                        Expression.FunctionOrValue _ "False" ->
-                            case simplifyExpression scope right |> Node.value of
-                                Expression.FunctionOrValue _ "True" ->
-                                    Expression.FunctionOrValue [] "True"
-
-                                Expression.FunctionOrValue _ "False" ->
-                                    Expression.FunctionOrValue [] "False"
-
-                                _ ->
-                                    Debug.todo ""
-
-                        _ ->
-                            Debug.todo ""
-
-                "&&" ->
-                    case simplifyExpression scope left |> Node.value of
-                        Expression.FunctionOrValue _ "True" ->
-                            case simplifyExpression scope right |> Node.value of
-                                Expression.FunctionOrValue _ "True" ->
-                                    Expression.FunctionOrValue [] "True"
-
-                                Expression.FunctionOrValue _ "False" ->
-                                    Expression.FunctionOrValue [] "False"
-
-                                _ ->
-                                    Debug.todo ""
 
                         Expression.FunctionOrValue _ "False" ->
                             Expression.FunctionOrValue [] "False"
@@ -259,6 +249,41 @@ simplifyExpression scope (Node _ expression) =
                 _ ->
                     Debug.todo ""
 
+        "&&" ->
+            case simplifyExpression scope left |> Node.value of
+                Expression.FunctionOrValue _ "True" ->
+                    case simplifyExpression scope right |> Node.value of
+                        Expression.FunctionOrValue _ "True" ->
+                            Expression.FunctionOrValue [] "True"
+
+                        Expression.FunctionOrValue _ "False" ->
+                            Expression.FunctionOrValue [] "False"
+
+                        _ ->
+                            Debug.todo ""
+
+                Expression.FunctionOrValue _ "False" ->
+                    Expression.FunctionOrValue [] "False"
+
+                _ ->
+                    Debug.todo ""
+
+        _ ->
+            Debug.todo ""
+
+
+simplifyExpression : Scope -> Node Expression -> Node Expression
+simplifyExpression scope (Node _ expression) =
+    (case expression of
+        Expression.UnitExpr ->
+            expression
+
+        Expression.Application nodes ->
+            List.map (simplifyExpression scope) nodes |> Debug.todo ""
+
+        Expression.OperatorApplication operator _ left right ->
+            handleOperatorApplication scope expression operator left right
+
         Expression.FunctionOrValue moduleName name ->
             if String.left 1 name |> String.all Char.isUpper then
                 expression
@@ -267,16 +292,24 @@ simplifyExpression scope (Node _ expression) =
                 Debug.todo ""
 
         Expression.IfBlock condition ifTrue ifFalse ->
-            Debug.todo ""
+            case simplifyExpression scope condition |> Node.value of
+                Expression.FunctionOrValue _ "True" ->
+                    simplifyExpression scope ifTrue
 
-        Expression.PrefixOperator string ->
-            Debug.todo ""
+                Expression.FunctionOrValue _ "False" ->
+                    simplifyExpression scope ifFalse
 
-        Expression.Operator string ->
-            Debug.todo ""
+                _ ->
+                    Debug.todo ""
+
+        Expression.PrefixOperator operator ->
+            Expression.PrefixOperator operator
+
+        Expression.Operator operator ->
+            Expression.Operator operator
 
         Expression.Integer int ->
-            expression
+            Expression.Integer int
 
         Expression.Hex hex ->
             Expression.Integer hex
