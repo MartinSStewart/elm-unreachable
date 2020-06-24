@@ -1,24 +1,35 @@
 module InterpreterTests exposing (..)
 
-import Dict
 import Elm.Parser
 import Elm.Processing
-import Elm.Syntax.Declaration exposing (Declaration(..))
-import Elm.Syntax.Expression as Expression exposing (Expression)
-import Elm.Syntax.File exposing (File)
-import Elm.Syntax.Node as Node exposing (Node(..))
-import Elm.Syntax.Pattern exposing (Pattern(..))
-import Elm.Syntax.Range as Range
 import Expect
 import Interpreter exposing (CallTree(..))
-import List.Zipper exposing (Zipper)
 import Test exposing (..)
 import Unreachable
 
 
-simpleModule : File
-simpleModule =
-    """module A exposing (..)
+parseCode =
+    String.replace "\u{000D}\n" "\n"
+        >> Elm.Parser.parse
+        >> Result.map (Elm.Processing.process Elm.Processing.init)
+        >> Unreachable.alwaysOk
+
+
+codeTest : String -> String -> List Interpreter.Reachability -> Test
+codeTest name file expected =
+    test name <|
+        \_ ->
+            parseCode file
+                |> Interpreter.visitFile
+                |> Interpreter.visitTree
+                |> Expect.equal expected
+
+
+tests : Test
+tests =
+    describe "Interpreter tests"
+        [ codeTest "Is unreachable"
+            """module A exposing (..)
 
 import Unreachable exposing (unreachable)
 
@@ -27,12 +38,9 @@ a =
         True -> ()
         False -> unreachable ()
 """
-        |> parseCode
-
-
-simpleModuleReachable : File
-simpleModuleReachable =
-    """module A exposing (..)
+            [ Interpreter.Unreachable ]
+        , codeTest "Is reachable"
+            """module A exposing (..)
 
 import Unreachable exposing (unreachable)
 
@@ -41,12 +49,9 @@ a =
         True -> ()
         False -> unreachable ()
 """
-        |> parseCode
-
-
-moduleAdditionUnreachable : File
-moduleAdditionUnreachable =
-    """module A exposing (..)
+            [ Interpreter.Reachable ]
+        , codeTest "Is unreachable 2"
+            """module A exposing (..)
 
 import Unreachable exposing (unreachable)
 
@@ -55,12 +60,9 @@ a =
         6 -> unreachable ()
         _ -> ()
 """
-        |> parseCode
-
-
-moduleAdditionReachable : File
-moduleAdditionReachable =
-    """module A exposing (..)
+            [ Interpreter.Unreachable ]
+        , codeTest "Is reachable 2"
+            """module A exposing (..)
 
 import Unreachable exposing (unreachable)
 
@@ -69,12 +71,9 @@ a =
         7 -> unreachable ()
         _ -> ()
 """
-        |> parseCode
-
-
-moduleAdditionBoth : File
-moduleAdditionBoth =
-    """module A exposing (..)
+            [ Interpreter.Reachable ]
+        , codeTest "At least one is reachable"
+            """module A exposing (..)
 
 import Unreachable exposing (unreachable)
 
@@ -84,12 +83,9 @@ a =
         2 -> unreachable ()
         _ -> ()
 """
-        |> parseCode
-
-
-moduleNestedCaseBlockUnreachable : File
-moduleNestedCaseBlockUnreachable =
-    """module A exposing (..)
+            [ Interpreter.Reachable ]
+        , codeTest "Is nested case block unreachable"
+            """module A exposing (..)
 
 import Unreachable exposing (unreachable)
 
@@ -101,12 +97,9 @@ a =
                 True -> ()
                 False -> unreachable ()
 """
-        |> parseCode
-
-
-moduleNestedCaseBlockReachable : File
-moduleNestedCaseBlockReachable =
-    """module A exposing (..)
+            [ Interpreter.Unreachable ]
+        , codeTest "Is nested case block reachable"
+            """module A exposing (..)
 
 import Unreachable exposing (unreachable)
 
@@ -118,12 +111,9 @@ a =
                 True -> ()
                 False -> unreachable ()
 """
-        |> parseCode
-
-
-moduleFunctionCallUnreachable : File
-moduleFunctionCallUnreachable =
-    """module A exposing (..)
+            [ Interpreter.Reachable ]
+        , codeTest "Is function call unreachable"
+            """module A exposing (..)
 
 import Unreachable exposing (unreachable)
 
@@ -134,12 +124,9 @@ a =
         True -> ()
         False -> unreachable ()
 """
-        |> parseCode
-
-
-moduleFunctionCallReachable : File
-moduleFunctionCallReachable =
-    """module A exposing (..)
+            [ Interpreter.Unreachable ]
+        , codeTest "Is function call reachable"
+            """module A exposing (..)
 
 import Unreachable exposing (unreachable)
 
@@ -150,86 +137,57 @@ a =
         True -> ()
         False -> unreachable ()
 """
-        |> parseCode
+            [ Interpreter.Reachable ]
+        , codeTest "Is function call with param unreachable"
+            """module A exposing (..)
 
+import Unreachable exposing (unreachable)
 
-parseCode =
-    String.replace "\u{000D}\n" "\n"
-        >> Elm.Parser.parse
-        >> Result.map (Elm.Processing.process Elm.Processing.init)
-        >> Unreachable.alwaysOk
+b x = x
 
+a =
+    case b 4 of 
+        4 -> ()
+        _ -> unreachable ()
+"""
+            [ Interpreter.Unreachable ]
+        , codeTest "Is function call with param reachable"
+            """module A exposing (..)
 
-removeExprFields : CallTree -> CallTree
-removeExprFields tree =
-    let
-        emptyExpr =
-            Node Range.emptyRange Expression.UnitExpr
-    in
-    case tree of
-        Unreachable_ _ ->
-            { expr = emptyExpr } |> Unreachable_
+import Unreachable exposing (unreachable)
 
-        CasePattern { children, caseOfDependsOn } ->
-            { expr = emptyExpr
-            , children =
-                List.map
-                    (Tuple.mapBoth (Node.value >> Node Range.emptyRange) (Maybe.map removeExprFields))
-                    children
-            , caseOfDependsOn = caseOfDependsOn
-            }
-                |> CasePattern
+b x = x
 
-        FunctionDeclaration_ { name, child } ->
-            { expr = emptyExpr, name = name, child = removeExprFields child } |> FunctionDeclaration_
+a =
+    case b 4 of 
+        5 -> ()
+        _ -> unreachable ()
+"""
+            [ Interpreter.Reachable ]
+        , codeTest "Is function call with 2 params reachable"
+            """module A exposing (..)
 
+import Unreachable exposing (unreachable)
 
-tests : Test
-tests =
-    describe "Interpreter tests"
-        [ test "Is unreachable" <|
-            \_ ->
-                Interpreter.visitFile (Debug.log "simple" simpleModule)
-                    |> Interpreter.visitTree
-                    |> Expect.equal [ Interpreter.Unreachable ]
-        , test "Is reachable" <|
-            \_ ->
-                Interpreter.visitFile simpleModuleReachable
-                    |> Interpreter.visitTree
-                    |> Expect.equal [ Interpreter.Reachable ]
-        , test "Is unreachable 2" <|
-            \_ ->
-                Interpreter.visitFile moduleAdditionUnreachable
-                    |> Interpreter.visitTree
-                    |> Expect.equal [ Interpreter.Unreachable ]
-        , test "Is reachable 2" <|
-            \_ ->
-                Interpreter.visitFile moduleAdditionReachable
-                    |> Interpreter.visitTree
-                    |> Expect.equal [ Interpreter.Reachable ]
-        , test "At least one is reachable" <|
-            \_ ->
-                Interpreter.visitFile moduleAdditionBoth
-                    |> Interpreter.visitTree
-                    |> Expect.equal [ Interpreter.Reachable ]
-        , test "Is nested case block unreachable" <|
-            \_ ->
-                Interpreter.visitFile moduleNestedCaseBlockUnreachable
-                    |> Interpreter.visitTree
-                    |> Expect.equal [ Interpreter.Unreachable ]
-        , test "Is nested case block reachable" <|
-            \_ ->
-                Interpreter.visitFile moduleNestedCaseBlockReachable
-                    |> Interpreter.visitTree
-                    |> Expect.equal [ Interpreter.Reachable ]
-        , test "Is function call unreachable" <|
-            \_ ->
-                Interpreter.visitFile moduleFunctionCallUnreachable
-                    |> Interpreter.visitTree
-                    |> Expect.equal [ Interpreter.Unreachable ]
-        , test "Is function call reachable" <|
-            \_ ->
-                Interpreter.visitFile moduleFunctionCallReachable
-                    |> Interpreter.visitTree
-                    |> Expect.equal [ Interpreter.Reachable ]
+b x y = x
+
+a =
+    case b 4 5 of
+        5 -> ()
+        _ -> unreachable ()
+"""
+            [ Interpreter.Reachable ]
+        , codeTest "Is function call with 2 params unreachable"
+            """module A exposing (..)
+
+import Unreachable exposing (unreachable)
+
+b x y = y
+
+a =
+    case b 4 5 of
+        5 -> ()
+        _ -> unreachable ()
+"""
+            [ Interpreter.Unreachable ]
         ]

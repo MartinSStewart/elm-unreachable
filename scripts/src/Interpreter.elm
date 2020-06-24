@@ -2,7 +2,7 @@ module Interpreter exposing (CallTree(..), Reachability(..), visitFile, visitTre
 
 import Dict exposing (Dict)
 import Elm.Syntax.Declaration exposing (Declaration(..))
-import Elm.Syntax.Expression as Expression exposing (Expression, LetDeclaration(..))
+import Elm.Syntax.Expression as Expression exposing (Expression, FunctionImplementation, LetDeclaration(..))
 import Elm.Syntax.File exposing (File)
 import Elm.Syntax.ModuleName exposing (ModuleName)
 import Elm.Syntax.Node as Node exposing (Node(..))
@@ -19,6 +19,13 @@ type CallTree
         , children : List ( Node Pattern, Maybe CallTree )
         }
     | FunctionDeclaration_ { expr : Node Expression, name : String, child : CallTree }
+    | OperatorApplication
+        { expr : Node Expression
+        , leftExpr : Node Expression -- We need to keep this in case there's short circuiting involved
+        , leftChild : Maybe CallTree
+        , rightChild : Maybe CallTree
+        , operator : String -- We need to keep this to check if there's short circuiting involved
+        }
 
 
 type Reachability
@@ -29,26 +36,29 @@ type Reachability
 
 type alias Scope =
     { topLevel : Dict String Expression.Function
+    , parameters : Dict String Expression
     }
 
 
 getBaseScope : File -> Scope
 getBaseScope file =
-    file.declarations
-        |> List.filterMap
-            (\(Node _ declaration) ->
-                case declaration of
-                    FunctionDeclaration function ->
-                        Just
-                            ( Node.value function.declaration |> .name |> Node.value
-                            , function
-                            )
+    { topLevel =
+        file.declarations
+            |> List.filterMap
+                (\(Node _ declaration) ->
+                    case declaration of
+                        FunctionDeclaration function ->
+                            Just
+                                ( Node.value function.declaration |> .name |> Node.value
+                                , function
+                                )
 
-                    _ ->
-                        Nothing
-            )
-        |> Dict.fromList
-        |> Scope
+                        _ ->
+                            Nothing
+                )
+            |> Dict.fromList
+    , parameters = Dict.empty
+    }
 
 
 handleOperatorApplication : Scope -> Expression -> String -> Node Expression -> Node Expression -> Expression
@@ -270,9 +280,81 @@ handleOperatorApplication scope expression operator left right =
             Debug.todo ""
 
 
-getFunction : Scope -> ModuleName -> String -> Maybe (Node Expression)
-getFunction scope moduleName functionName =
-    Dict.get functionName scope.topLevel |> Maybe.map (.declaration >> Node.value >> .expression)
+topLevelDefinition :
+    Scope
+    -> ModuleName
+    -> String
+    -> Maybe { arguments : List (Node Pattern), expression : Node Expression }
+topLevelDefinition scope moduleName functionName =
+    case Dict.get functionName scope.parameters of
+        Just paramValue ->
+            Just { arguments = [], expression = Node Elm.Syntax.Range.emptyRange paramValue }
+
+        Nothing ->
+            Dict.get functionName scope.topLevel
+                |> Maybe.map
+                    (.declaration
+                        >> Node.value
+                        >> (\{ arguments, expression } -> { arguments = arguments, expression = expression })
+                    )
+
+
+scopeAddParameters : List ( Pattern, Expression ) -> Scope -> Scope
+scopeAddParameters params { topLevel, parameters } =
+    { topLevel = topLevel
+    , parameters =
+        params
+            |> List.concatMap
+                (\( param, expression ) ->
+                    case param of
+                        Pattern.CharPattern char ->
+                            Debug.todo ""
+
+                        Pattern.AllPattern ->
+                            Debug.todo ""
+
+                        Pattern.UnitPattern ->
+                            Debug.todo ""
+
+                        Pattern.StringPattern string ->
+                            Debug.todo ""
+
+                        Pattern.IntPattern int ->
+                            Debug.todo ""
+
+                        Pattern.HexPattern int ->
+                            Debug.todo ""
+
+                        Pattern.FloatPattern float ->
+                            Debug.todo ""
+
+                        Pattern.TuplePattern nodes ->
+                            Debug.todo ""
+
+                        Pattern.RecordPattern nodes ->
+                            Debug.todo ""
+
+                        Pattern.UnConsPattern node rest ->
+                            Debug.todo ""
+
+                        Pattern.ListPattern nodes ->
+                            Debug.todo ""
+
+                        Pattern.VarPattern var ->
+                            [ ( var, expression ) ]
+
+                        Pattern.NamedPattern qualifiedNameRef nodes ->
+                            Debug.todo ""
+
+                        Pattern.AsPattern node alias ->
+                            Debug.todo ""
+
+                        Pattern.ParenthesizedPattern node ->
+                            Debug.todo ""
+                )
+            |> Dict.fromList
+            |> Dict.union parameters
+    }
 
 
 simplifyExpression : Scope -> Node Expression -> Node Expression
@@ -282,7 +364,44 @@ simplifyExpression scope (Node _ expression) =
             expression
 
         Expression.Application nodes ->
-            List.map (simplifyExpression scope) nodes |> Debug.todo ""
+            let
+                application : List (Node Expression)
+                application =
+                    List.map (simplifyExpression scope) nodes
+            in
+            case application of
+                (Node _ (Expression.FunctionOrValue moduleName name)) :: rest ->
+                    case topLevelDefinition scope moduleName name of
+                        Just function ->
+                            let
+                                params : List ( Pattern, Expression )
+                                params =
+                                    List.zip
+                                        (function.arguments |> List.map Node.value)
+                                        (List.map Node.value rest)
+
+                                paramCount =
+                                    List.length params
+                            in
+                            if List.length rest == paramCount then
+                                simplifyExpression (scopeAddParameters params scope) function.expression |> Node.value
+
+                            else if List.length rest > paramCount then
+                                simplifyExpression (scopeAddParameters params scope) function.expression
+                                    :: List.drop paramCount rest
+                                    |> Expression.Application
+                                    |> Node Elm.Syntax.Range.emptyRange
+                                    |> simplifyExpression scope
+                                    |> Node.value
+
+                            else
+                                Expression.Application application
+
+                        Nothing ->
+                            Debug.todo ""
+
+                _ ->
+                    Debug.todo ""
 
         Expression.OperatorApplication operator _ left right ->
             handleOperatorApplication scope expression operator left right
@@ -292,12 +411,16 @@ simplifyExpression scope (Node _ expression) =
                 expression
 
             else
-                case getFunction scope moduleName name of
-                    Just functionExpression ->
-                        simplifyExpression scope functionExpression |> Node.value
+                case topLevelDefinition scope moduleName name of
+                    Just function ->
+                        if List.isEmpty function.arguments then
+                            simplifyExpression scope function.expression |> Node.value
+
+                        else
+                            expression
 
                     Nothing ->
-                        Debug.todo ""
+                        Debug.todo name
 
         Expression.IfBlock condition ifTrue ifFalse ->
             case simplifyExpression scope condition |> Node.value of
@@ -562,6 +685,9 @@ visitTreeHelper scope tree =
         FunctionDeclaration_ { name, child } ->
             visitTreeHelper scope child
 
+        OperatorApplication { leftChild, rightChild, operator, leftExpr } ->
+            Debug.todo ""
+
 
 visitFile : File -> ( Scope, List CallTree )
 visitFile file =
@@ -610,8 +736,15 @@ visitExpressionHelper node =
             Debug.todo ""
 
         --List.concatMap visitExpressionHelper nodes
-        Expression.OperatorApplication _ _ left right ->
-            Debug.todo ""
+        Expression.OperatorApplication operator _ left right ->
+            OperatorApplication
+                { expr = node
+                , leftExpr = left
+                , leftChild = visitExpressionHelper left
+                , rightChild = visitExpressionHelper right
+                , operator = operator
+                }
+                |> Just
 
         --visitExpressionHelper left
         --    ++ visitExpressionHelper right
